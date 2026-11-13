@@ -17,8 +17,79 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git zip unzip autoconf automake autopoint gettext libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev cmake libffi-dev libssl-dev
-          python -m pip install 'buildozer==1.5.0' 'Cython==0.29.36' setuptools
+          sudo apt-get install -y git zip unzip patch autoconf automake autopoint gettext libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev cmake libffi-dev libssl-dev
+          command -v autopoint
+          python -m pip install 'buildozer==1.5.0' 'Cython==0.29.36' 'setuptools==68.2.2' 'wheel==0.43.0'
+      - name: Prepare pinned Android toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch v2024.01.21 https://github.com/kivy/python-for-android.git .p4a
+          python - <<'PY'
+          from pathlib import Path
+          import configparser
+          import re
+          root = Path('.p4a/pythonforandroid/recipes')
+          # Use setup.py-based recipes compatible with Python 3.11, rather
+          # than a moving develop branch selecting Python 3.14 / NumPy 2.3.
+          fixes = {
+              'numpy': ('1.24.4', '''
+              def prebuild_arch(self, arch):
+                  super().prebuild_arch(arch)
+                  from pathlib import Path
+                  base = Path(self.get_build_dir(arch.arch))
+                  p = base / 'numpy/distutils/system_info.py'
+                  text = p.read_text()
+                  import re
+                  text = re.sub(r'^(default_(?:lib|runtime|include|src)_dirs) = \\[.*$', r'\\1 = []', text, flags=re.M)
+                  text = text.replace('        return path\\n', '        return []\\n')
+                  p.write_text(text)
+                  p = base / 'numpy/distutils/unixccompiler.py'
+                  text = p.read_text()
+                  marker = "        self.ranlib = [os.environ.get('RANLIB')]\\n"
+                  if marker not in text:
+                      text = text.replace('        if self.ranlib:\\n', marker + '        if self.ranlib:\\n', 1)
+                  p.write_text(text)
+                  p = base / 'numpy/linalg/setup.py'
+                  text = p.read_text()
+                  text = text.replace("libraries=['npymath'],", "libraries=['npymath', 'm'],")
+                  text = text.replace("extra_info=lapack_info,\\n    )", "extra_info=lapack_info,\\n        libraries=['m'],\\n    )")
+                  p.write_text(text)
+          '''),
+              'pandas': ('1.5.3', '''
+              def prebuild_arch(self, arch):
+                  super().prebuild_arch(arch)
+                  from pathlib import Path
+                  p = Path(self.get_build_dir(arch.arch)) / 'setup.py'
+                  text = p.read_text()
+                  if "os.environ.get('NUMPY_INCLUDES')" not in text:
+                      text = text.replace('numpy.get_include()', "(os.environ.get('NUMPY_INCLUDES') or numpy.get_include())")
+                  p.write_text(text)
+          '''),
+          }
+          import textwrap
+          for name, (version, method) in fixes.items():
+              p = root / name / '__init__.py'
+              text = p.read_text()
+              text = re.sub(r"    version = '[^']+'", f"    version = '{version}'", text, count=1)
+              text, count = re.subn(r'    patches = \[.*?\]', '    patches = []', text, count=1, flags=re.S)
+              assert count == 1, name
+              method = textwrap.indent(textwrap.dedent(method).strip(), '    ')
+              text = text.replace('\nrecipe = ', '\n' + method + '\n\nrecipe = ', 1)
+              compile(text, str(p), 'exec')
+              p.write_text(text)
+          spec = Path('buildozer.spec')
+          cfg = configparser.ConfigParser(interpolation=None)
+          cfg.read(spec)
+          app = cfg['app']
+          app['requirements'] = 'python3==3.11.5,hostpython3==3.11.5,kivy==2.3.1,numpy==1.24.4,pandas==1.5.3,requests,certifi,arabic-reshaper,python-bidi==0.4.2,pyjnius'
+          app['p4a.source_dir'] = str(Path('.p4a').resolve())
+          excluded = app.get('source.exclude_dirs', '')
+          app['source.exclude_dirs'] = excluded + ',.p4a'
+          with spec.open('w') as f:
+              cfg.write(f)
+          print('Pinned: p4a v2024.01.21 / Python 3.11.5 / NumPy 1.24.4 / pandas 1.5.3')
+          PY
       - name: Build APK
         run: buildozer android debug
       - uses: actions/upload-artifact@v4

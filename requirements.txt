@@ -1,0 +1,7 @@
+kivy==2.3.1
+numpy
+pandas
+requests
+certifi
+arabic-reshaper
+python-bidi==0.4.2

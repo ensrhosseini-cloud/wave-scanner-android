@@ -55,6 +55,15 @@ jobs:
                   text = text.replace("libraries=['npymath'],", "libraries=['npymath', 'm'],")
                   text = text.replace("extra_info=lapack_info,\\n    )", "extra_info=lapack_info,\\n        libraries=['m'],\\n    )")
                   p.write_text(text)
+                  # Keep compiler/configuration diagnostics visible. NumPy normally
+                  # lowers the log threshold while generating config headers.
+                  p = base / 'numpy/distutils/command/build_src.py'
+                  text = p.read_text()
+                  needle = 'old_level = log.set_threshold(new_level)'
+                  replacement = 'old_level = log.set_threshold(log.DEBUG, force=True)'
+                  assert needle in text or replacement in text, 'NumPy configuration logging hook changed'
+                  text = text.replace(needle, replacement, 1)
+                  p.write_text(text)
           '''),
               'pandas': ('1.5.3', '''
               def prebuild_arch(self, arch):
@@ -80,6 +89,11 @@ jobs:
               assert count == 1, f'{name}: source URL not found'
               text, count = re.subn(r'    patches = \[.*?\]', '    patches = []', text, count=1, flags=re.S)
               assert count == 1, name
+              if name == 'numpy':
+                  marker = '        env["NPY_DISABLE_SVML"] = "1"'
+                  assert marker in text, 'NumPy environment hook changed'
+                  # Prefer libm explicitly; do not skip any feature checks.
+                  text = text.replace(marker, marker + '\n        env["MATHLIB"] = "m"', 1)
               method = textwrap.indent(textwrap.dedent(method).strip(), '    ')
               text = text.replace('\nrecipe = ', '\n' + method + '\n\nrecipe = ', 1)
               compile(text, str(p), 'exec')
@@ -97,7 +111,43 @@ jobs:
           print('Pinned: p4a v2024.01.21 / Python 3.11.5 / NumPy 1.24.4 / pandas 1.5.3')
           PY
       - name: Build APK
-        run: buildozer android debug
+        shell: bash
+        run: |
+          set -euo pipefail
+          buildozer -v android debug 2>&1 | tee android-build.log
+      - name: Collect build diagnostics
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p build-diagnostics
+          if [ -f android-build.log ]; then
+            cp android-build.log build-diagnostics/
+          fi
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+          target = Path('build-diagnostics')
+          root = Path('.buildozer')
+          if root.exists():
+              names = {'config.log', 'CMakeError.log', 'CMakeOutput.log', '_configtest.c'}
+              for p in root.rglob('*'):
+                  if p.is_file() and p.name in names:
+                      dest = target / p
+                      dest.parent.mkdir(parents=True, exist_ok=True)
+                      shutil.copy2(p, dest)
+          for name in ('numpy', 'pandas'):
+              p = Path('.p4a/pythonforandroid/recipes') / name / '__init__.py'
+              if p.exists():
+                  shutil.copy2(p, target / (name + '-recipe.py'))
+          PY
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: WaveScanner-build-diagnostics
+          path: build-diagnostics/
+          include-hidden-files: true
+          if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         with:
           name: WaveScanner-Android-debug

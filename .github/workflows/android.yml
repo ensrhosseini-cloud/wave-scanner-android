@@ -68,10 +68,16 @@ jobs:
           '''),
           }
           import textwrap
+          source_urls = {
+              'numpy': 'https://files.pythonhosted.org/packages/a4/9b/027bec52c633f6556dba6b722d9a0befb40498b9ceddd29cbe67a45a127c/numpy-1.24.4.tar.gz',
+              'pandas': 'https://files.pythonhosted.org/packages/74/ee/146cab1ff6d575b54ace8a6a5994048380dc94879b0125b25e62edcb9e52/pandas-1.5.3.tar.gz',
+          }
           for name, (version, method) in fixes.items():
               p = root / name / '__init__.py'
               text = p.read_text()
               text = re.sub(r"    version = '[^']+'", f"    version = '{version}'", text, count=1)
+              text, count = re.subn(r"^    url = [^\n]+", f"    url = {source_urls[name]!r}", text, count=1, flags=re.M)
+              assert count == 1, f'{name}: source URL not found'
               text, count = re.subn(r'    patches = \[.*?\]', '    patches = []', text, count=1, flags=re.S)
               assert count == 1, name
               method = textwrap.indent(textwrap.dedent(method).strip(), '    ')
